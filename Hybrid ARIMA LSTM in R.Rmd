@@ -1,0 +1,306 @@
+---
+title: "Hybrid ARIMA-LSTM Time Series model"
+author: "Triardy Satria Wibawa"
+date: "8/18/2021"
+output: html_document
+---
+# Load The Required Package
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(keras)
+library(reticulate)
+library(tensorflow)
+```
+
+# Read Selected Data
+```{r Read data}
+bca <- read_csv("bbca_skripsi.csv")
+bca <- bca %>%
+  select(Date, Close) %>%
+  mutate(Date = ymd(Date))
+bca
+summary(bca)
+```
+
+#Plot Time Series Data
+```{r Plotting Data}
+bca %>%
+  ggplot(aes(x = Date, y = Close)) + 
+  geom_point(size = 0.5) + 
+  geom_line(lwd = 1) +
+  theme_minimal() + 
+  labs(title = "Closing Price of BBCA January 2015 - November 2020", 
+       subtitle = "2015/01/02 - 2020/11/30",
+       x = "Date",
+       y = "Closing Price (Rupiah)") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16), axis.text.x = element_text(angle = -45), plot.subtitle = element_text(colour = "#858484", hjust = 1)) + 
+  scale_x_date(date_labels = "%b - %y", date_breaks = "4 months")
+```
+
+# Split data to training and testing
+```{r}
+train_len_bca <- floor(0.8*length(bca$Close))
+test_len_bca <- length(bca$Close) - train_len_bca
+close_train_bca <- as.matrix(bca$Close[1:train_len_bca])
+close_test_bca <- as.matrix(bca$Close[(train_len_bca + 1):nrow(bca)])
+```
+
+# Variance Stationary Checking
+```{r}
+FitAR::BoxCox(close_train_bca)
+closetr_bc1_bca <- BoxCox(close_train_bca, lambda = 0.308)
+FitAR::BoxCox(closetr_bc1_bca)
+tseries::adf.test(closetr_bc1_bca)
+close_d_bca <- diff(closetr_bc1_bca)
+tseries::adf.test(close_d_bca)
+mean(close_d_bca)
+```
+Variance has been stable after Box-Cox transformation with lambda = 0.308
+
+#Plot ACF dan PACF for checking significant lag
+```{r}
+ggAcf(close_d_bca, 25, main = "Series: Harga Penutupan Saham BCA Setelah Differencing")
+ggPacf(close_d_bca, 25, main = "Series: Harga Penutupan Saham BCA Setelah Differencing")
+```
+
+#Function Choose significant lag for restricted model 
+```{r}
+fix_func <- function(y){
+  x<- seq(1:max(y))
+  x <- ifelse(x %in% y,
+              NA, 
+              0)
+  return(x)
+}
+
+bca1 <- fix_func(c(2, 4, 6, 26, 29, 39, 44))
+bca2 <- fix_func(c(2, 4, 6, 26, 29, 39))
+bca3 <- fix_func(c(2, 4, 6, 26, 29))
+bca4 <- fix_func(c(2, 4, 6, 26))
+bca5 <- fix_func(c(2, 4, 6))
+bca6 <- fix_func(c(2, 4))
+bca7 <- fix_func(2)
+```
+
+#Modeling ARIMA with selected lags (Only show model with all params significants)
+```{r}
+arima4_bca <- Arima(close_train_bca, order = c(4, 1, 4), 
+                fixed = c(bca6, bca6), lambda = 0.308, 
+                method = "CSS")
+arima4_bca
+lmtest::coeftest(arima4_bca, df = train_len_bca - sum(arima4_bca$coef != 0))
+
+arima7_bca <- Arima(close_train_bca, order = c(2, 1, 2), 
+                fixed = c(bca7, bca7), lambda = 0.308, 
+                method = "CSS")
+arima7_bca
+lmtest::coeftest(arima7_bca, df = train_len_bca - sum(arima7_bca$coef != 0))
+
+arima8_bca <- Arima(close_train_bca, order = c(0, 1, 2), 
+                fixed = c(bca7), lambda = 0.308, 
+                method = "CSS")
+arima8_bca
+lmtest::coeftest(arima8_bca, df = train_len_bca - sum(arima8_bca$coef != 0))
+
+arima9_bca <- Arima(close_train_bca, order = c(2, 1, 0), 
+                fixed = c(bca7), lambda = 0.308, 
+                method = "CSS")
+arima9_bca
+lmtest::coeftest(arima9_bca, df = train_len_bca - sum(arima9_bca$coef != 0))
+```
+
+#Diagnostics Checking
+```{r}
+checkresiduals(arima4_bca)
+checkresiduals(arima7_bca)
+checkresiduals(arima8_bca)
+checkresiduals(arima9_bca)
+ks.test(arima4_bca$residuals, "pnorm", mean(arima4_bca$residuals), sd(arima4_bca$residuals))
+ks.test(arima7_bca$residuals, "pnorm", mean(arima7_bca$residuals), sd(arima7_bca$residuals)) 
+ks.test(arima8_bca$residuals, "pnorm", mean(arima8_bca$residuals), sd(arima8_bca$residuals)) 
+ks.test(arima9_bca$residuals, "pnorm", mean(arima9_bca$residuals), sd(arima9_bca$residuals))
+```
+
+#Select best model by choosing the lowest MAPE
+```{r}
+MLmetrics::MAPE(as.numeric(arima4_bca$fitted), close_train_bca)
+MLmetrics::MAPE(as.numeric(arima7_bca$fitted), close_train_bca)
+MLmetrics::MAPE(as.numeric(arima8_bca$fitted), close_train_bca)
+MLmetrics::MAPE(as.numeric(arima9_bca$fitted), close_train_bca)
+```
+Use ARIMA([2], 1, 0) Because having the minimum MAPE
+
+# Get the residual from the best ARIMA model
+```{r}
+residual_bca <- close_train_bca - as.numeric(arima9_bca$fitted)
+head(round(residual_bca, 4))
+summary(residual_bca)
+```
+
+#Plot The Training data and Predicted ARIMA Model
+```{r}
+data.frame(Tanggal = bca$Date[1:train_len_bca], asli = close_train_bca, pred = as.numeric(arima9_bca$fitted)) %>%
+  gather("Kelompok", "Nilai", -Tanggal) %>%
+  ggplot(aes(x = Tanggal, y = Nilai, col = Kelompok)) + geom_point() + geom_line()
+```
+
+#RESET Test for checking Non linearitt based on the best ARIMA Model
+```{r}
+lmtest::resettest(close_train_bca ~ lag(close_train_bca, 1) + lag(close_train_bca, 2) + lag(close_train_bca, 3) + residual_bca)
+```
+
+#One Step Forecast ARIMA
+```{r}
+one_step_bca <- Arima(close_test_bca, model = arima9_bca)
+one_step_bca
+MLmetrics::MAPE(c(forecast(arima9_bca, h = 1)$mean, as.numeric(one_step_bca$fitted)[-1]), close_test_bca)
+
+data.frame(Tanggal = bca$Date[(train_len_bca + 1):nrow(bca)], asli = close_test_bca, pred = as.numeric(one_step_bca$fitted)) %>%
+  gather("Kelompok", "Nilai", -Tanggal) %>%
+  ggplot(aes(x = Tanggal, y = Nilai, col = Kelompok)) + geom_point(size = 0.4) + geom_line(lwd = 1)
+
+```
+
+##Normalization function
+```{r}
+normalize <- function(x){
+  x <- (x - min(x))/(max(x) - min(x))
+}
+unnorm <- function(x, min_x, max_x){ 
+  x <- x*(max_x - min_x) + min_x
+}
+range_data <- function(x, mx, mn){
+  x <- ((x-mn)/(mx-mn))
+  return(x)
+}
+```
+
+#Residual normalization
+```{r}
+res_scale_bca <- normalize(residual_bca)
+```
+
+#Make time step input for LSTM
+```{r}
+a_bca <- iter_next(as_iterator(timeseries_generator(res_scale_bca, res_scale_bca, length = 4, 
+                                  batch_size = length(res_scale_bca) - 4)))
+x_bca <- a_bca[[1]]
+y_bca <- a_bca[[2]]
+head(x_bca)
+dim(x_bca); dim(y_bca)
+```
+
+```{python}
+import os
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
+```
+
+#Load TensorFlow model from Python
+```{r}
+model_lstm <- tf$keras$models$load_model("E:/model_lstm.h5")
+```
+
+#Make sure the architecture same with the one in python
+```{r}
+summary(model_lstm)
+```
+
+#Join the prediction and evaluate the model
+```{r}
+fitted_lstm <- model_lstm %>%
+  predict(x_bca)
+
+unn <- unnorm(fitted_lstm, min_x = min(residual_bca), max_x = max(residual_bca))
+gab <- unn + as.numeric(arima9_bca$fitted)[-c(1:4)]
+
+data_gab_training <- data.frame(x = 1:length(fitted_lstm),
+                       data_asli = close_train_bca[-c(1:4)], 
+                       prediksi = gab)
+
+paste("MAPE ARIMA Model Training Data: ", round(MLmetrics::MAPE(as.numeric(arima9_bca$fitted), close_train_bca), 5))
+paste("MAPE Hybrid Model Training Data: ", round(MLmetrics::MAPE(data_gab_training$prediksi, data_gab_training$data_asli), 5))
+```
+MAPE better in Hybrid Model than only ARIMA model
+
+
+#Training Data vs Fitted Hybrid Model
+```{r}
+data.frame(x = bca$Date[c(5:train_len_bca)], 
+                        data_train = close_train_bca[-c(1:4)], 
+                        arima_pred = fitted(arima9_bca)[-c(1:4)],
+                        hybrid_pred = gab)[1:30, ] %>%
+  gather("Kategori", "Nilai", -x) %>%
+  mutate(Kategori = factor(Kategori, levels = c("data_train", "arima_pred", "hybrid_pred"), 
+                           labels = c("Data Training", "Fitted Model ARIMA", "Fitted Model Hybrid"))) %>%
+  ggplot(aes(x = x, y = Nilai, col = Kategori)) + geom_line(lwd = 1.25) + geom_point(size = 0.5) +
+    labs(title = expression(paste("Plot Data Training, ", 
+                                  italic("Fitted "), "Arima, dan ", italic("Fitted"), " Model ", 
+                                  italic("Hybrid "))),
+         x = "Tanggal",
+         y = "Harga Penutupan Saham (Rp)") + theme_minimal() +
+  theme(axis.text.x = element_text(angle = -45)) + 
+  scale_x_date(date_labels = "%d-%b-%y", date_breaks = "1 weeks")
+```
+
+#Datatest (one step forecast)
+```{r}
+Nt <- close_test_bca - c(forecast(arima9_bca, h = 1)$mean, as.numeric(one_step_bca$fitted)[-1])
+res_test_bca <- c(tail(residual_bca, 4), Nt)
+res_scale_test <- range_data(res_test_bca, mx = max(residual_bca), mn = min(residual_bca))
+a_bca_test <- iter_next(as_iterator(timeseries_generator(res_scale_test, res_scale_test, length = 4, 
+                                  batch_size = length(res_scale_bca) - 4)))
+x_bca_test <- array(a_bca_test[[1]], dim =c(298, 4, 1))
+y_bca_test <- a_bca_test[[2]]
+dim(x_bca_test); dim(y_bca_test)
+```
+
+#Save Weights
+```{r}
+model_lstm$save_weights("E:/bobot_aja.h5")
+```
+
+#Make New Model based on the last model
+```{r}
+baru <- keras_model_sequential()
+baru %>%
+  layer_lstm(50, input_shape = c(4, 1)) %>%
+  layer_dense(4, activation = "relu") %>%
+  layer_dense(1)
+
+baru$load_weights("E:/bobot_aja.h5")
+```
+#One Step Forecast Hybrid Model
+```{r}
+pred_test_1 <- baru %>%
+  predict(x_bca_test)
+
+unnorm_pred_test_1 <- unnorm(pred_test_1, min_x = min(residual_bca), max_x = max(residual_bca))
+
+pred_gab_test_1 <- unnorm_pred_test_1 + c(forecast(arima9_bca, h = 1)$mean, as.numeric(one_step_bca$fitted)[-1])
+
+data_gab_test_1 <- data.frame(x = 1:length(pred_gab_test_1), 
+                       data_asli = close_test_bca, 
+                       prediksi = pred_gab_test_1)
+
+paste("MAPE ARIMA Model Testing Data: ", round(MLmetrics::MAPE(c(forecast(arima9_bca, h = 1)$mean, as.numeric(one_step_bca$fitted)[-1]), close_test_bca), 5))
+paste("MAPE Hybrid Model Testing Data: ", round(MLmetrics::MAPE(data_gab_test_1$prediksi, data_gab_test_1$data_asli), 5))
+```
+
+```{r}
+data.frame(x = bca$Date[(train_len_bca+1):length(bca$Date)], 
+                        data_test = close_test_bca, 
+                        arima_pred = c(forecast(arima9_bca, h = 1)$mean,
+                                       as.numeric(one_step_bca$fitted)[-1]),
+                        hybrid_pred = pred_gab_test_1)[1:30, ] %>%
+  gather("Kategori", "Nilai", -x) %>%
+  mutate(Kategori = factor(Kategori, levels = c("data_test", "arima_pred", "hybrid_pred"), labels = c("Data Testing", "Ramalan Model ARIMA", "Ramalan Model Hybrid"))) %>%
+  ggplot(aes(x = x, y = Nilai, col = Kategori)) + geom_line(lwd = 1.25) + geom_point(size = 0.5) + theme(plot.title = element_text(hjust = 1)) +
+    labs(title = "Plot Data Testing, Ramalan Arima, dan Ramalan Model Hybrid",
+         x = "Tanggal",
+         y = "Harga Penutupan Saham (Rp)") + theme_minimal() + theme_minimal() +
+  theme(axis.text.x = element_text(angle = -45)) + 
+  scale_x_date(date_labels = "%d-%b-%y", date_breaks = "1 weeks")
+
+```
